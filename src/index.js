@@ -1,33 +1,25 @@
 #!/usr/bin/env node
 /**
- * BitBucket Cloud MCP — для Cursor
- * Працює з bitbucket.org (Cloud API v2)
+ * BitBucket Cloud REST API — для Railway
+ * Всі ті самі інструменти що й у MCP сервері, але через HTTP
  *
- * Змінні середовища:
- *   BITBUCKET_WORKSPACE  — наприклад: hobby
- *   BITBUCKET_TOKEN      — App Password (Repository Read + Pull requests Read)
- *   BITBUCKET_USERNAME   — твій логін на bitbucket.org
+ * POST /tool          — викликати інструмент
+ * GET  /tools         — список доступних інструментів
+ * GET  /health        — перевірка що сервер живий
  */
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import express from "express";
+import cors from "cors";
 
 // ─── Конфіг ──────────────────────────────────────────────────────────────────
 const BB_API      = "https://api.bitbucket.org/2.0";
 const WORKSPACE   = process.env.BITBUCKET_WORKSPACE?.trim();
 const BB_TOKEN    = process.env.BITBUCKET_TOKEN?.trim();
 const BB_USERNAME = process.env.BITBUCKET_USERNAME?.trim();
+const PORT        = process.env.PORT || 3000;
 
-if (!WORKSPACE) {
-  process.stderr.write("ERROR: BITBUCKET_WORKSPACE не задано (наприклад: andriiChervak)\n");
-  process.exit(1);
-}
-if (!BB_TOKEN || !BB_USERNAME) {
-  process.stderr.write("ERROR: BITBUCKET_USERNAME і BITBUCKET_TOKEN обов'язкові\n");
+if (!WORKSPACE || !BB_TOKEN || !BB_USERNAME) {
+  console.error("ERROR: BITBUCKET_WORKSPACE, BITBUCKET_USERNAME і BITBUCKET_TOKEN обов'язкові");
   process.exit(1);
 }
 
@@ -107,14 +99,11 @@ function fmtInlineComment(c, anchorInfo, depth = 0) {
   return lines.join("\n");
 }
 
-// ─── Резолвінг anchor (Cloud v2) ──────────────────────────────────────────────
-// inline: { from, to, path } — to = номер рядка нової версії, from = старої
 async function resolveCloudAnchor(repo, prId, inline) {
   if (!inline?.path) return { filePath: null, lineNumber: null, snippet: null, isInline: false };
 
   const filePath   = inline.path;
   const lineNumber = inline.to ?? inline.from ?? null;
-
   if (!lineNumber) return { filePath, lineNumber: null, snippet: null, isInline: true };
 
   const snippet = await fetchCloudFileLine(repo, filePath, lineNumber);
@@ -147,172 +136,72 @@ async function fetchCloudFileLine(repo, filePath, lineNumber) {
   }
 }
 
-// ─── Інструменти ──────────────────────────────────────────────────────────────
-const TOOLS = [
+// ─── Визначення інструментів ──────────────────────────────────────────────────
+const TOOLS_SCHEMA = [
   {
     name: "bb_list_repos",
-    description: "Список репозиторіїв у workspace. Workspace задано у конфігу автоматично.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filter: { type: "string", description: "Фільтр за назвою (опціонально)" },
-      },
-    },
+    description: "Список репозиторіїв workspace.",
+    params: { filter: "string?" },
   },
   {
     name: "bb_list_prs",
-    description: "Список PR репозиторію. Фільтрує за станом та автором.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:   { type: "string" },
-        state:  { type: "string", enum: ["OPEN", "MERGED", "DECLINED", "SUPERSEDED"], default: "MERGED" },
-        author: { type: "string", description: "username автора (опціонально)" },
-        limit:  { type: "number", default: 30 },
-      },
-      required: ["repo"],
-    },
+    description: "PR репозиторію за станом та автором.",
+    params: { repo: "string", state: "OPEN|MERGED|DECLINED (default: MERGED)", author: "string?", limit: "number?" },
   },
   {
     name: "bb_get_pr",
-    description: "Деталі PR: автор, ревьюери, статус, гілки, URL.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:  { type: "string" },
-        pr_id: { type: "number" },
-      },
-      required: ["repo", "pr_id"],
-    },
+    description: "Деталі PR: автор, ревьюери, гілки, URL.",
+    params: { repo: "string", pr_id: "number" },
   },
   {
     name: "bb_get_pr_comments",
-    description: "Всі коментарі PR. Inline-коментарі показуються з фрагментом коду.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:        { type: "string" },
-        pr_id:       { type: "number" },
-        inline_only: { type: "boolean", default: false },
-        file_filter: { type: "string" },
-      },
-      required: ["repo", "pr_id"],
-    },
-  },
-  {
-    name: "bb_get_pr_inline_comments",
-    description: "Тільки inline-коментарі PR з прив'язкою до файлу і рядка коду.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:        { type: "string" },
-        pr_id:       { type: "number" },
-        file_filter: { type: "string" },
-      },
-      required: ["repo", "pr_id"],
-    },
+    description: "Всі коментарі PR. Inline-коментарі з фрагментом коду.",
+    params: { repo: "string", pr_id: "number", inline_only: "boolean?", file_filter: "string?" },
   },
   {
     name: "bb_search_pr_comments",
-    description: "Пошук по коментарях всіх PR за ключовими словами. Результати з кодом.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:        { type: "string" },
-        query:       { type: "string" },
-        days:        { type: "number", default: 180 },
-        limit:       { type: "number", default: 30 },
-        file_filter: { type: "string" },
-      },
-      required: ["repo", "query"],
-    },
+    description: "Пошук по коментарях всіх PR за ключовими словами.",
+    params: { repo: "string", query: "string", days: "number?", limit: "number?", file_filter: "string?" },
   },
   {
     name: "bb_search_inline_comments",
-    description:
-      "Пошук тільки по inline-коментарях. Найточніший спосіб знайти патерни команди — " +
-      "видно і зауваження, і код що його спричинив.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:        { type: "string" },
-        query:       { type: "string" },
-        days:        { type: "number", default: 180 },
-        limit:       { type: "number", default: 20 },
-        file_filter: { type: "string" },
-      },
-      required: ["repo", "query"],
-    },
+    description: "Пошук тільки по inline-коментарях з кодом. Найкращий для аналізу патернів команди.",
+    params: { repo: "string", query: "string", days: "number?", limit: "number?", file_filter: "string?" },
   },
   {
     name: "bb_get_reviewer_patterns",
-    description:
-      "Всі коментарі конкретного ревьюера з кодом. Допомагає зрозуміти негласні стандарти.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:          { type: "string" },
-        reviewer_slug: { type: "string", description: "username (nickname) ревьюера на bitbucket.org" },
-        days:          { type: "number", default: 365 },
-      },
-      required: ["repo", "reviewer_slug"],
-    },
+    description: "Всі коментарі конкретного ревьюера з кодом.",
+    params: { repo: "string", reviewer_slug: "string", days: "number?" },
+  },
+  {
+    name: "bb_dump_all_inline_comments",
+    description: "Всі inline-коментарі всіх PR репозиторію. Без фільтру — повний дамп для аналізу.",
+    params: { repo: "string", days: "number?", limit_prs: "number?" },
   },
   {
     name: "bb_get_file_history",
-    description: "Список PR що торкались конкретного файлу.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:      { type: "string" },
-        file_path: { type: "string" },
-        limit:     { type: "number", default: 20 },
-      },
-      required: ["repo", "file_path"],
-    },
+    description: "PR що торкались конкретного файлу.",
+    params: { repo: "string", file_path: "string", limit: "number?" },
   },
   {
     name: "bb_get_pr_diff",
-    description: "Diff PR у форматі unified diff.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:        { type: "string" },
-        pr_id:       { type: "number" },
-        path_filter: { type: "string" },
-      },
-      required: ["repo", "pr_id"],
-    },
+    description: "Unified diff PR.",
+    params: { repo: "string", pr_id: "number", path_filter: "string?" },
   },
   {
     name: "bb_get_branches",
-    description: "Список гілок репозиторію.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo:   { type: "string" },
-        filter: { type: "string" },
-      },
-      required: ["repo"],
-    },
+    description: "Гілки репозиторію.",
+    params: { repo: "string", filter: "string?" },
   },
   {
     name: "bb_get_file_content",
-    description: "Вміст файлу з репозиторію на конкретній гілці або коміті.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string" },
-        ref:  { type: "string", default: "HEAD" },
-      },
-      required: ["repo", "path"],
-    },
+    description: "Вміст файлу з репо на гілці або коміті.",
+    params: { repo: "string", path: "string", ref: "string?" },
   },
 ];
 
-// ─── Обробники ────────────────────────────────────────────────────────────────
-async function handleTool(name, args) {
+// ─── Обробники інструментів ───────────────────────────────────────────────────
+async function handleTool(name, args = {}) {
   switch (name) {
 
     case "bb_list_repos": {
@@ -334,7 +223,6 @@ async function handleTool(name, args) {
         fields: "values.id,values.title,values.state,values.author,values.source,values.destination,values.created_on,values.links,values.description,next",
       };
       if (args.author) params.q = `author.username="${args.author}"`;
-
       const prs = await bbFetchAll(
         `/repositories/${WORKSPACE}/${args.repo}/pullrequests`,
         params,
@@ -353,21 +241,17 @@ async function handleTool(name, args) {
       return fmtPR(pr) + `\n  Ревьюери: ${reviewers || "—"}`;
     }
 
-    case "bb_get_pr_comments":
-    case "bb_get_pr_inline_comments": {
-      const inlineOnly = name === "bb_get_pr_inline_comments" || args.inline_only;
-
-      const comments = await bbFetchAll(
+    case "bb_get_pr_comments": {
+      const inlineOnly = args.inline_only ?? false;
+      const comments   = await bbFetchAll(
         `/repositories/${WORKSPACE}/${args.repo}/pullrequests/${args.pr_id}/comments`,
         { fields: "values.id,values.content,values.user,values.created_on,values.inline,next" },
       );
-
       const filtered = comments.filter(c => {
         if (inlineOnly && !c.inline) return false;
         if (args.file_filter && c.inline?.path && !c.inline.path.includes(args.file_filter)) return false;
         return true;
       });
-
       if (!filtered.length) return "Коментарів не знайдено.";
 
       const inlineCount  = filtered.filter(c => c.inline).length;
@@ -381,7 +265,6 @@ async function handleTool(name, args) {
           : { filePath: null, lineNumber: null, snippet: null, isInline: false };
         parts.push(fmtInlineComment(c, info));
       }
-
       return header + parts.join("\n\n" + "═".repeat(50) + "\n\n");
     }
 
@@ -398,7 +281,6 @@ async function handleTool(name, args) {
       );
 
       const results = [];
-
       for (const pr of prs.filter(p => new Date(p.created_on).getTime() >= since)) {
         if (results.length >= (args.limit ?? 30)) break;
 
@@ -410,7 +292,6 @@ async function handleTool(name, args) {
         for (const c of comments) {
           if (inlineOnly && !c.inline) continue;
           if (args.file_filter && c.inline?.path && !c.inline.path.includes(args.file_filter)) continue;
-
           const text = c.content?.raw ?? "";
           if (!text.toLowerCase().includes(queryLow)) continue;
 
@@ -427,6 +308,46 @@ async function handleTool(name, args) {
         ? `Знайдено ${results.length} коментарів за запитом «${args.query}»:\n\n` +
           results.join("\n\n" + "═".repeat(50) + "\n\n")
         : `Нічого не знайдено за запитом «${args.query}».`;
+    }
+
+    case "bb_dump_all_inline_comments": {
+      const since    = Date.now() - (args.days ?? 365) * 86400_000;
+      const limitPrs = args.limit_prs ?? 100;
+
+      const prs = await bbFetchAll(
+        `/repositories/${WORKSPACE}/${args.repo}/pullrequests`,
+        { state: "MERGED", fields: "values.id,values.title,values.created_on,next" },
+        limitPrs,
+      );
+
+      const results = [];
+      for (const pr of prs.filter(p => new Date(p.created_on).getTime() >= since)) {
+        const comments = await bbFetchAll(
+          `/repositories/${WORKSPACE}/${args.repo}/pullrequests/${pr.id}/comments`,
+          { fields: "values.id,values.content,values.user,values.created_on,values.inline,next" },
+        ).catch(() => []);
+
+        const inlineComments = comments.filter(c => c.inline);
+        if (!inlineComments.length) continue;
+
+        const parts = [];
+        for (const c of inlineComments) {
+          const info = await resolveCloudAnchor(args.repo, pr.id, c.inline);
+          parts.push(fmtInlineComment(c, info));
+        }
+
+        results.push(
+          `${"▶".repeat(3)} PR #${pr.id} «${pr.title}» (${inlineComments.length} inline коментарів)\n\n` +
+          parts.join("\n\n" + "─".repeat(40) + "\n\n"),
+        );
+      }
+
+      if (!results.length) return "Inline-коментарів не знайдено.";
+
+      return (
+        `Всього PR з inline-коментарями: ${results.length}\n\n` +
+        results.join("\n\n" + "═".repeat(60) + "\n\n")
+      );
     }
 
     case "bb_get_reviewer_patterns": {
@@ -470,13 +391,11 @@ async function handleTool(name, args) {
         { state: "MERGED", fields: "values.id,values.title,values.state,values.author,values.source,values.destination,values.created_on,values.links,values.description,next" },
         200,
       );
-
       const matched = [];
       for (const pr of prs) {
         const diffstat = await bbFetch(
           `/repositories/${WORKSPACE}/${args.repo}/pullrequests/${pr.id}/diffstat`,
         ).catch(() => ({ values: [] }));
-
         const hasFile = (diffstat.values ?? []).some(
           f => (f.new?.path ?? f.old?.path ?? "").includes(args.file_path),
         );
@@ -485,7 +404,6 @@ async function handleTool(name, args) {
           if (matched.length >= (args.limit ?? 20)) break;
         }
       }
-
       return matched.length
         ? `PR що торкались «${args.file_path}»:\n\n` + matched.join("\n\n─────\n\n")
         : `Жодного PR не знайдено для файлу «${args.file_path}».`;
@@ -498,9 +416,7 @@ async function handleTool(name, args) {
       );
       if (!res.ok) throw new Error(`diff API: ${res.status}`);
       const text = await res.text();
-
       if (!args.path_filter) return text.slice(0, 12000);
-
       const sections = text.split(/^(?=diff --git)/m);
       const filtered = sections.filter(s => s.includes(args.path_filter));
       return filtered.join("").slice(0, 12000) || "Файлів за фільтром не знайдено.";
@@ -532,28 +448,52 @@ async function handleTool(name, args) {
   }
 }
 
-// ─── MCP Server ───────────────────────────────────────────────────────────────
-const server = new Server(
-  { name: "bitbucket-cloud-mcp", version: "2.0.0" },
-  { capabilities: { tools: {} } },
-);
+// ─── Express додаток ──────────────────────────────────────────────────────────
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+// GET /health — перевірка що сервер живий
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", workspace: WORKSPACE });
+});
 
-server.setRequestHandler(CallToolRequestSchema, async req => {
-  const { name, arguments: args } = req.params;
+// GET /tools — список доступних інструментів з описом і параметрами
+app.get("/tools", (req, res) => {
+  res.json({ tools: TOOLS_SCHEMA });
+});
+
+// POST /tool — виклик інструменту
+// Body: { "name": "bb_list_repos", "args": { "filter": "backend" } }
+app.post("/tool", async (req, res) => {
+  const { name, args } = req.body ?? {};
+
+  if (!name) {
+    return res.status(400).json({ error: 'Поле "name" обов\'язкове' });
+  }
+
+  const known = TOOLS_SCHEMA.find(t => t.name === name);
+  if (!known) {
+    return res.status(404).json({
+      error: `Невідомий інструмент: ${name}`,
+      available: TOOLS_SCHEMA.map(t => t.name),
+    });
+  }
+
   try {
     const result = await handleTool(name, args ?? {});
-    return { content: [{ type: "text", text: result }] };
+    res.json({ result });
   } catch (err) {
-    return {
-      content: [{ type: "text", text: `Помилка: ${err.message}` }],
-      isError: true,
-    };
+    res.status(500).json({ error: err.message });
   }
 });
 
 // ─── Запуск ───────────────────────────────────────────────────────────────────
-const transport = new StdioServerTransport();
-await server.connect(transport);
-process.stderr.write(`BitBucket Cloud MCP запущено → workspace: ${WORKSPACE}\n`);
+app.listen(PORT, () => {
+  console.log(`BitBucket API сервер запущено на порту ${PORT}`);
+  console.log(`Workspace: ${WORKSPACE}`);
+  console.log(`Доступні ендпоінти:`);
+  console.log(`  GET  /health`);
+  console.log(`  GET  /tools`);
+  console.log(`  POST /tool`);
+});
