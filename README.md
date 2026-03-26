@@ -1,307 +1,159 @@
-# BitBucket Cloud API Server
+# BitBucket MCP — Streamable HTTP
 
-REST API сервер для хостингу на Railway. Надає доступ до репозиторіїв, PR та коментарів BitBucket Cloud через прості HTTP запити — для використання з будь-якою LLM або сервісом.
+MCP сервер для BitBucket Cloud з підтримкою **MCP Streamable HTTP транспорту** — сумісний з llama.cpp WebUI, Railway та будь-яким іншим MCP клієнтом.
+
+Нуль зовнішніх залежностей — тільки вбудований Node.js `http` та `fetch`.
 
 ---
 
-## Ендпоінти
+## Як це працює
 
-| Метод | Шлях | Що робить |
-|---|---|---|
-| `GET` | `/health` | Перевірка що сервер живий |
-| `GET` | `/tools` | Список всіх інструментів з описом і параметрами |
-| `POST` | `/tool` | Виклик інструменту |
+llama.cpp WebUI підключається до сервера через стандартний протокол **JSON-RPC 2.0** по одному ендпоінту `/mcp`. Протокол:
+
+```
+llama.cpp → POST /mcp {"jsonrpc":"2.0","method":"initialize",...}
+сервер    → {"jsonrpc":"2.0","result":{"protocolVersion":"2025-06-18",...}}
+
+llama.cpp → POST /mcp {"jsonrpc":"2.0","method":"tools/list",...}
+сервер    → {"jsonrpc":"2.0","result":{"tools":[...]}}
+
+llama.cpp → POST /mcp {"jsonrpc":"2.0","method":"tools/call","params":{"name":"bb_list_repos",...}}
+сервер    → {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"..."}]}}
+```
+
+---
+
+## Встановлення
+
+```bash
+cd bitbucket-mcp-http
+npm install   # залежностей немає, тільки генерує package-lock.json
+```
+
+---
+
+## Запуск локально
+
+**PowerShell:**
+```powershell
+$env:BITBUCKET_WORKSPACE="andriiChervak"
+$env:BITBUCKET_USERNAME="твій_email@gmail.com"
+$env:BITBUCKET_TOKEN="ATATT3xxx..."
+node src/index.js
+```
+
+**cmd.exe:**
+```cmd
+set BITBUCKET_WORKSPACE=andriiChervak && set BITBUCKET_USERNAME=email@gmail.com && set BITBUCKET_TOKEN=ATATT3xxx && node src/index.js
+```
+
+Сервер запуститься на `http://localhost:3000/mcp`.
+
+---
+
+## Підключення до llama.cpp WebUI
+
+1. Відкрий llama.cpp WebUI
+2. Знайди розділ **MCP Servers** (або Tools → MCP)
+3. Додай новий сервер:
+   - URL: `http://localhost:3000/mcp` (локально) або `https://your-app.up.railway.app/mcp` (Railway)
+4. Натисни **Connect** — llama.cpp автоматично виконає `initialize` і `tools/list`
+5. Всі інструменти з'являться у списку доступних
+
+> Якщо llama.cpp запущений локально і сервер теж локально — використовуй `http://127.0.0.1:3000/mcp`. Якщо llama.cpp на іншій машині — потрібен Railway або інший хостинг.
 
 ---
 
 ## Деплой на Railway
 
-### 1. Форкни або завантаж репозиторій на GitHub
+### 1. Завантаж на GitHub
 
-### 2. Створи новий проєкт на Railway
+### 2. New Project → Deploy from GitHub repo
 
-- Зайди на [railway.app](https://railway.app)
-- **New Project → Deploy from GitHub repo**
-- Обери репозиторій
-
-### 3. Додай змінні середовища
-
-У Railway → твій проєкт → **Variables**:
+### 3. Додай змінні у Railway → Variables:
 
 | Змінна | Значення |
 |---|---|
-| `BITBUCKET_WORKSPACE` | `andriiChervak` (або твій workspace) |
+| `BITBUCKET_WORKSPACE` | `andriiChervak` |
 | `BITBUCKET_USERNAME` | твій email на bitbucket.org |
 | `BITBUCKET_TOKEN` | App Password з BitBucket |
 
-### 4. Railway автоматично задеплоїть сервер
-
-Після деплою отримаєш URL вигляду:
-```
-https://your-app.up.railway.app
-```
-
-### 5. Перевір що працює
+### 4. Після деплою підключай у llama.cpp:
 
 ```
-https://your-app.up.railway.app/health
-```
-
-Повинно повернути:
-```json
-{ "status": "ok", "workspace": "andriiChervak" }
+https://your-app.up.railway.app/mcp
 ```
 
 ---
 
-## Використання
+## Змінні середовища
 
-### Отримати список інструментів
+| Змінна | Обов'язкова | Опис |
+|---|---|---|
+| `BITBUCKET_WORKSPACE` | Так | Workspace slug, напр. `andriiChervak` |
+| `BITBUCKET_USERNAME` | Так | Email або логін на bitbucket.org |
+| `BITBUCKET_TOKEN` | Так | App Password (Repositories Read + Pull requests Read + Account Read) |
+| `PORT` | Ні | Порт (Railway встановлює автоматично) |
 
-```
-GET /tools
-```
+---
 
-Повертає список всіх доступних інструментів з описом і параметрами.
+## Ендпоінти
 
-### Викликати інструмент
-
-```
-POST /tool
-Content-Type: application/json
-
-{
-  "name": "назва_інструменту",
-  "args": { ...параметри }
-}
-```
-
-Відповідь:
-```json
-{ "result": "текстовий результат" }
-```
-
-Помилка:
-```json
-{ "error": "опис помилки" }
-```
+| Метод | Шлях | Призначення |
+|---|---|---|
+| `POST` | `/mcp` | Основний MCP ендпоінт (JSON-RPC 2.0) |
+| `GET` | `/mcp` | Перевірка з'єднання (llama.cpp робить перед initialize) |
+| `GET` | `/health` | Railway health check |
 
 ---
 
 ## Інструменти
 
-### bb_list_repos
-Список репозиторіїв workspace.
-
-```json
-{ "name": "bb_list_repos", "args": {} }
-{ "name": "bb_list_repos", "args": { "filter": "backend" } }
-```
-
-### bb_list_prs
-PR репозиторію.
-
-```json
-{
-  "name": "bb_list_prs",
-  "args": { "repo": "my-backend", "state": "MERGED", "limit": 30 }
-}
-```
-
-### bb_get_pr
-Деталі конкретного PR.
-
-```json
-{
-  "name": "bb_get_pr",
-  "args": { "repo": "my-backend", "pr_id": 42 }
-}
-```
-
-### bb_get_pr_comments
-Всі коментарі PR з фрагментами коду.
-
-```json
-{
-  "name": "bb_get_pr_comments",
-  "args": { "repo": "my-backend", "pr_id": 42 }
-}
-```
-
-```json
-{
-  "name": "bb_get_pr_comments",
-  "args": { "repo": "my-backend", "pr_id": 42, "inline_only": true }
-}
-```
-
-### bb_search_pr_comments
-Пошук по коментарях всіх PR.
-
-```json
-{
-  "name": "bb_search_pr_comments",
-  "args": { "repo": "my-backend", "query": "error handling", "days": 365 }
-}
-```
-
-### bb_search_inline_comments
-Пошук тільки по inline-коментарях (з кодом). Найкращий для аналізу патернів команди.
-
-```json
-{
-  "name": "bb_search_inline_comments",
-  "args": { "repo": "my-backend", "query": "naming", "days": 365, "limit": 20 }
-}
-```
-
-### bb_dump_all_inline_comments
-Всі inline-коментарі всіх PR без фільтру. Повний дамп для аналізу.
-
-```json
-{
-  "name": "bb_dump_all_inline_comments",
-  "args": { "repo": "my-backend", "days": 365, "limit_prs": 100 }
-}
-```
-
-### bb_get_reviewer_patterns
-Всі коментарі конкретного ревьюера з кодом.
-
-```json
-{
-  "name": "bb_get_reviewer_patterns",
-  "args": { "repo": "my-backend", "reviewer_slug": "john.smith", "days": 180 }
-}
-```
-
-### bb_get_file_history
-PR що торкались файлу.
-
-```json
-{
-  "name": "bb_get_file_history",
-  "args": { "repo": "my-backend", "file_path": "src/services/auth.py" }
-}
-```
-
-### bb_get_pr_diff
-Unified diff PR.
-
-```json
-{
-  "name": "bb_get_pr_diff",
-  "args": { "repo": "my-backend", "pr_id": 42 }
-}
-```
-
-### bb_get_branches
-Гілки репозиторію.
-
-```json
-{
-  "name": "bb_get_branches",
-  "args": { "repo": "my-backend" }
-}
-```
-
-### bb_get_file_content
-Вміст файлу.
-
-```json
-{
-  "name": "bb_get_file_content",
-  "args": { "repo": "my-backend", "path": "src/services/auth.py", "ref": "main" }
-}
-```
-
----
-
-## Приклади викликів з self-hosted LLM
-
-### Python
-
-```python
-import requests
-
-API_URL = "https://your-app.up.railway.app"
-
-def call_tool(name, args={}):
-    res = requests.post(f"{API_URL}/tool", json={"name": name, "args": args})
-    return res.json()["result"]
-
-# Отримати всі inline-коментарі по темі
-patterns = call_tool("bb_search_inline_comments", {
-    "repo": "my-backend",
-    "query": "exception",
-    "days": 365,
-    "limit": 30,
-})
-
-# Передати в LLM для аналізу
-prompt = f"""
-Ось inline-коментарі ревьюерів до коду команди:
-
-{patterns}
-
-Сформулюй з них конкретні правила для .cursorrules файлу.
-"""
-```
-
-### curl
-
-```bash
-curl -X POST https://your-app.up.railway.app/tool \
-  -H "Content-Type: application/json" \
-  -d '{"name": "bb_list_repos", "args": {}}'
-```
-
----
-
-## Формат відповіді для коментарів
-
-```
-▶ PR #42 «Refactor auth service»
-
-📍 src/services/auth.py:87
-┌─ код ──────────────────────────────────────
-│     83    def authenticate(self, token):
-│     84        try:
-│     85            payload = jwt.decode(token)
-│ >>> 87        except Exception as e:
-│     88            raise e
-└────────────────────────────────────────────
-[John Smith, 15.03.2025]
-Не перехоплюй без обробки — wrap у AuthError
-```
-
----
-
-## Локальний запуск
-
-```bash
-npm install
-
-# PowerShell
-$env:BITBUCKET_WORKSPACE="andriiChervak"
-$env:BITBUCKET_USERNAME="твій_email@gmail.com"
-$env:BITBUCKET_TOKEN="ATATT3xxx..."
-npm start
-
-# cmd.exe
-set BITBUCKET_WORKSPACE=andriiChervak && set BITBUCKET_USERNAME=email@gmail.com && set BITBUCKET_TOKEN=ATATT3xxx && npm start
-```
-
-Сервер запуститься на `http://localhost:3000`.
-
----
-
-## Різниця від MCP версії
-
-| | MCP сервер | Цей сервер |
+| Інструмент | Обов'язкові параметри | Що робить |
 |---|---|---|
-| Протокол | stdio (MCP) | HTTP REST |
-| Використання | Тільки в Cursor | Будь-яка LLM, скрипт, сервіс |
-| Хостинг | Локально на машині | Railway, Render, VPS |
-| Аутентифікація | Не потрібна | Немає (Railway закриває) |
-| Нові інструменти | `bb_get_pr_inline_comments` | `bb_dump_all_inline_comments` |
+| `bb_list_repos` | — | Список репозиторіїв workspace |
+| `bb_list_prs` | `repo` | PR за станом та автором |
+| `bb_get_pr` | `repo`, `pr_id` | Деталі PR |
+| `bb_get_pr_comments` | `repo`, `pr_id` | Коментарі PR з кодом |
+| `bb_search_pr_comments` | `repo`, `query` | Пошук по коментарях |
+| `bb_search_inline_comments` | `repo`, `query` | Пошук тільки по inline з кодом |
+| `bb_dump_all_inline_comments` | `repo` | Всі inline без фільтру |
+| `bb_get_reviewer_patterns` | `repo`, `reviewer_slug` | Коментарі ревьюера з кодом |
+| `bb_get_file_history` | `repo`, `file_path` | PR що торкались файлу |
+| `bb_get_pr_diff` | `repo`, `pr_id` | Unified diff PR |
+| `bb_get_branches` | `repo` | Гілки репо |
+| `bb_get_file_content` | `repo`, `path` | Вміст файлу |
+
+---
+
+## Перевірка через curl
+
+```bash
+# Ініціалізація
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}'
+
+# Список інструментів
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+
+# Виклик інструменту
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bb_list_repos","arguments":{}}}'
+```
+
+---
+
+## Усунення проблем
+
+**llama.cpp пише "Streamable HTTP error"**
+Перевір що сервер запущений і доступний. Якщо llama.cpp і сервер на різних машинах — потрібен публічний URL (Railway).
+
+**401 від BitBucket**
+Перевір `BITBUCKET_USERNAME` — має бути email, не логін. Перегенеруй App Password з дозволами Account Read + Repositories Read + Pull requests Read.
+
+**404 при зверненні до репо**
+Використовуй slug репозиторію (частина URL на bitbucket.org), не display name.
