@@ -410,7 +410,7 @@ const server = http.createServer(async (req, res) => {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "*",
     "Access-Control-Allow-Headers": "*",
-    "Access-Control-Expose-Headers": "Mcp-Session-Id",
+    "Access-Control-Expose-Headers": "Mcp-Session-Id, mcp-protocol-version",
   };
 
   if (req.method === "OPTIONS") {
