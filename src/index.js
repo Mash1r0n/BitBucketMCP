@@ -408,8 +408,8 @@ async function handleJsonRpc(message) {
 const server = http.createServer(async (req, res) => {
   const cors = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Mcp-Session-Id, Accept",
+    "Access-Control-Allow-Methods": "*",
+    "Access-Control-Allow-Headers": "*",
     "Access-Control-Expose-Headers": "Mcp-Session-Id",
   };
 
