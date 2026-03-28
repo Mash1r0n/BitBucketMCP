@@ -440,7 +440,7 @@ const server = http.createServer(async (req, res) => {
       "Mcp-Session-Id": sessionId,
     });
     // Тримаємо з'єднання відкритим — ping кожні 30 сек
-    const ping = setInterval(() => res.write(": ping\n\n"), 30000);
+    const ping = setInterval(() => res.write(": ping\n\n"), 90000);
     req.on("close", () => clearInterval(ping));
     return;
   }
